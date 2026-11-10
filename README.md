@@ -229,25 +229,497 @@ Loads the tokenizer and the quantized Qwen model, switches to evaluation mode, a
 
 ### 6. Extraction rules and examples
 
-Builds the prompt examples, defines the response parser and extraction function, and tests the first input row.
+This section connects the uploaded examples to the model. It defines the extraction instructions, converts examples into chat messages, defines two functions, and runs a first-row test.
 
-The parser:
+Defining a function makes it available for later calls; it does not execute its body immediately. The example-building loop runs when this cell executes. The model runs only when the cell reaches the call to `extract_address()` near the bottom.
 
-1. Removes complete `<think>...</think>` blocks if present.
-2. Attempts to parse the full response as JSON.
-3. If that fails, attempts to parse the first brace-delimited object-like substring.
-4. Requires the parsed result to be a dictionary.
-5. Keeps the five expected fields, converts values to strings, and strips surrounding whitespace. Missing or falsy values become empty strings.
-6. Uppercases the state value.
-7. Converts a ZIP matching `12345-6789` to its first five digits.
+#### Complete Section 6 code
 
-The fallback substring search is a simple regular expression, not a general parser for nested or malformed JSON. The parser does not enforce an address schema beyond these steps.
+The following is the complete code from this notebook section, reproduced for reference. It relies on the imports, uploaded DataFrames, tokenizer, model, and settings created by the preceding notebook cells; it is not a standalone script.
+
+```python
+import json
+import re
+import time
+import torch
+
+FIELDS = ("address", "city", "state", "zip", "rationale")
+
+SYSTEM_PROMPT = """
+Extract a physical street address for geocoding from one messy text string.
+
+Return exactly one JSON object with these five string fields:
+address, city, state, zip, rationale.
+
+RULES:
+1. Keep the primary street number, street name, and directional.
+2. Extract the city, two-letter US state abbreviation, and five-digit ZIP.
+3. Remove recipient names, ATTN lines, care-of information, businesses,
+   departments, phone numbers, emails, invoices, reference numbers,
+   websites, HTML, delivery instructions, and unnecessary punctuation.
+4. Remove apartment, suite, unit, floor, room, and secondary building
+   identifiers that are not needed for street-level geocoding.
+5. Prefer addresses explicitly labeled CURRENT, NEW, or PHYSICAL
+   over OLD addresses or mailing addresses.
+6. Correct obvious typos only when supported by the original text.
+7. Never invent unsupported street numbers, streets, cities, or ZIPs.
+8. If no usable physical street address exists, leave address empty.
+9. If multiple conflicting addresses exist without a clear choice,
+   leave address empty.
+10. Preserve city, state, and ZIP when recoverable, even if the
+    street address cannot be determined.
+11. Explain important changes or missing information in one
+    short rationale.
+
+Return valid JSON only. No markdown or additional commentary.
+"""
+
+# Build few-shot examples from the uploaded CSV.
+demonstrations = []
+
+for _, row in examples_df.iterrows():
+    expected = {
+        field: str(row[field])
+        for field in FIELDS
+    }
+
+    demonstrations.extend([
+        {
+            "role": "user",
+            "content": "Raw address: " + str(row["raw_text"])
+        },
+        {
+            "role": "assistant",
+            "content": json.dumps(expected, ensure_ascii=False)
+        }
+    ])
+
+
+def parse_response(text):
+    text = re.sub(
+        r"<think>.*?</think>",
+        "",
+        text,
+        flags=re.DOTALL
+    ).strip()
+
+    try:
+        result = json.loads(text)
+
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*?\}", text)
+
+        if not match:
+            raise ValueError(
+                "No JSON found in model response: " + text[:200]
+            )
+
+        result = json.loads(match.group())
+
+    if not isinstance(result, dict):
+        raise ValueError("Model response is not a JSON object.")
+
+    cleaned = {
+        field: str(result.get(field, "") or "").strip()
+        for field in FIELDS
+    }
+
+    # Standardize state capitalization.
+    if cleaned["state"]:
+        cleaned["state"] = cleaned["state"].upper()
+
+    # Convert ZIP+4 to five digits.
+    if re.fullmatch(r"\d{5}-\d{4}", cleaned["zip"]):
+        cleaned["zip"] = cleaned["zip"][:5]
+
+    return cleaned
+
+
+def extract_address(raw_text):
+
+    messages = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT
+        }
+    ]
+
+    messages.extend(demonstrations)
+
+    messages.append({
+        "role": "user",
+        "content": "Raw address: " + str(raw_text)
+    })
+
+    # FIX: Return a dictionary of model inputs.
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+        return_dict=True,
+        enable_thinking=False
+    )
+
+    # Move tokenized inputs to the model device.
+    inputs = inputs.to(model.device)
+
+    # Generate the cleaned address.
+    with torch.inference_mode():
+        generated = model.generate(
+            **inputs,
+            max_new_tokens=MAX_NEW_TOKENS,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id
+        )
+
+    # Decode only newly generated tokens.
+    input_length = inputs["input_ids"].shape[-1]
+
+    response_text = tokenizer.decode(
+        generated[0][input_length:],
+        skip_special_tokens=True
+    )
+
+    return parse_response(response_text)
+
+
+print(f"Ready: {len(demonstrations) // 2} example pairs loaded.")
+
+# TEST ONE ADDRESS BEFORE PROCESSING THE DATASET.
+print("\nTesting the first address...")
+
+test_result = extract_address(input_df.iloc[0]["raw_text"])
+
+print("\nOriginal:")
+print(input_df.iloc[0]["raw_text"])
+
+print("\nQwen extraction:")
+print(json.dumps(test_result, indent=2))
+```
+
+#### 6.1 Imports and shared variables
+
+| Name | Role in this section |
+| --- | --- |
+| `json` | Converts example answers into JSON text and converts generated JSON text back into Python objects. |
+| `re` | Removes complete thinking tags, searches for a possible JSON object, and checks the ZIP+4 pattern. |
+| `time` | Imported here for the per-row timer used later in Section 7. |
+| `torch` | Provides inference mode and the tensor-based model runtime. |
+| `FIELDS` | Defines the five output field names and their order. |
+| `SYSTEM_PROMPT` | Stores the instructions sent to the model. |
+| `demonstrations` | Stores the example conversation messages created from the examples CSV. |
+
+`FIELDS` is a tuple. Reusing it keeps the expected example answers, parsed results, and blank error results aligned. It does not include `id`, `raw_text`, `error`, or `seconds`, because those are added by Python rather than extracted by the model.
+
+Changing `FIELDS` is a schema change, not a cosmetic rename. The examples upload validation, system prompt, and downstream expectations would also need to agree with the new fields.
+
+#### 6.2 What the system prompt controls
+
+`SYSTEM_PROMPT` is a multiline Python string. It tells the model what to extract, what to remove, how to choose between competing addresses, and when to leave a field empty.
+
+The phrase “five string fields” requests a flat JSON object. Flat output is easier to convert into one spreadsheet row than nested objects or a paragraph.
+
+The prompt's ambiguity rules matter: a row can successfully return an empty street address if the source contains only a city or two conflicting street addresses. An empty field can therefore be a valid extraction decision.
+
+The code does not implement a separate deterministic rule engine for removing names, selecting a current address, or identifying a street. Those judgments are made by the model under these instructions and the supplied examples. Python performs only the parsing and limited cleanup described below.
+
+#### 6.3 Building example conversations
+
+`examples_df.iterrows()` yields each example row together with its DataFrame index. The loop uses `_` for the index because it is not needed, and `row` for the row's values.
+
+For each example, the dictionary comprehension assigned to `expected` collects one value for every field in `FIELDS`. `str(row[field])` makes each value a string.
+
+`demonstrations.extend(...)` adds **two separate message dictionaries** to the list:
+
+| Message | Role | Content |
+| --- | --- | --- |
+| Example input | `user` | The literal prefix `Raw address: ` followed by the example's messy text. |
+| Example answer | `assistant` | A JSON serialization of the expected five-field dictionary. |
+
+The assistant message demonstrates the answer the model should imitate. It is supplied as part of the prompt, not generated during this loop.
+
+`json.dumps(expected, ensure_ascii=False)` turns the dictionary into valid JSON text. It handles JSON quoting and escaping, while allowing non-ASCII characters to remain readable rather than converting them all to escape sequences.
+
+If the CSV contains 8 examples, `demonstrations` contains 16 messages. This is why the status message divides its length by 2 to report the number of example pairs.
+
+Every example is included for every input row. There is no similarity search or automatic selection of the most relevant examples. More examples also mean a longer prompt and repeated processing work.
+
+#### 6.4 `parse_response(text)`: converting generated text into fields
+
+This function accepts the model's decoded answer as text and returns a Python dictionary containing the five expected fields. Its processing order is significant.
+
+**Step 1: Remove complete thinking blocks.**
+
+`re.sub()` removes text matching `<think>.*?</think>`. The `.*?` match is non-greedy, and `re.DOTALL` lets the dot match newline characters. A complete tagged block can therefore span several lines. The following `.strip()` removes leading and trailing whitespace from the remaining answer.
+
+This is a cleanup measure even though thinking is disabled in the chat-template call. It does not remove arbitrary commentary or an unfinished thinking block with no closing tag.
+
+**Step 2: Try normal JSON parsing.**
+
+`json.loads(text)` tries to convert the entire remaining response into a Python value. For the requested format, that value should be a dictionary.
+
+Valid JSON has stricter syntax than informal Python-like text. Single-quoted keys, trailing commas, or a truncated closing brace can cause `json.JSONDecodeError`.
+
+**Step 3: Try the fallback only if JSON decoding failed.**
+
+The regular expression `r"\{[\s\S]*?\}"` looks for the first opening brace and the earliest following closing brace. `[\s\S]` matches whitespace and non-whitespace characters, allowing the match to span lines.
+
+This can recover a simple object surrounded by extra text or Markdown formatting. If no brace-delimited candidate exists, the function raises `ValueError` with the first 200 characters of the cleaned response.
+
+If a candidate exists, the function passes it to `json.loads()`. Invalid JSON in that candidate still raises an error. The fallback does not repair missing quotation marks, add missing braces, or retry generation.
+
+The regex does not understand nested objects or braces inside quoted values. It may stop before the true end of an object in those cases. Flat JSON reduces this risk but does not eliminate it.
+
+**Step 4: Require a dictionary.**
+
+`isinstance(result, dict)` checks the parsed object's Python type. A JSON list, string, number, or `null` is rejected, even if it is syntactically valid JSON. The code raises `ValueError("Model response is not a JSON object.")`.
+
+A syntactically valid JSON list does not trigger the fallback, because the original `json.loads()` call succeeded; it instead fails this dictionary check.
+
+**Step 5: Build the cleaned dictionary.**
+
+For each expected field, `result.get(field, "")` reads its value or supplies an empty string if the key is absent. `or ""` also changes falsy values, such as JSON `null`, `false`, or numeric zero, to an empty string. `str(...)` converts the remaining value to text, and `.strip()` removes surrounding whitespace.
+
+Extra keys in the generated object are discarded. Missing expected keys become empty strings rather than triggering an error. A nonempty dictionary or list supplied as a field value is converted to its Python string representation, rather than rejected by a strict schema check.
+
+Consequently, a valid but empty JSON object can pass parsing and produce five empty fields with no processing error. Successful parsing should not be treated as proof of meaningful extraction.
+
+**Step 6: Uppercase state text.**
+
+If `state` is nonempty, `.upper()` changes its capitalization. `mi` becomes `MI`, but `Michigan` becomes `MICHIGAN`; this step does not map full state names to abbreviations or check membership in a list of valid codes.
+
+**Step 7: Shorten an exact ZIP+4 pattern.**
+
+`re.fullmatch(r"\d{5}-\d{4}", cleaned["zip"])` checks the complete ZIP string. When it matches, `[:5]` keeps the first five characters. For example, `01234-5678` becomes `01234`.
+
+The code does not pad a four-digit value, validate whether a ZIP exists, or convert a nine-digit value without a hyphen. The instruction to produce a five-digit ZIP is primarily enforced through prompting.
+
+Finally, `return cleaned` gives the dictionary back to the caller.
+
+#### 6.5 `extract_address(raw_text)`: one model request
+
+This function handles one address string from start to finish. It builds a fresh conversation, tokenizes it, generates an answer, decodes the answer, and passes it to `parse_response()`.
+
+**Build the message list.**
+
+`messages` starts with one `system` message containing `SYSTEM_PROMPT`. `messages.extend(demonstrations)` then adds all example messages. Finally, `messages.append(...)` adds the current input as a new `user` message.
+
+For 8 examples, one extraction request has 18 messages: 1 system message, 16 example messages, and 1 current-input message.
+
+This fresh list prevents previous input records and their generated answers from accumulating in the conversation. The same model instance stays loaded, but prior records are not explicitly added to the next row's prompt.
+
+**Apply the model's chat template and tokenize.**
+
+A model needs numerical token IDs, not a Python list of message dictionaries. `tokenizer.apply_chat_template()` converts the conversation into the format expected by the tokenizer/model and tokenizes it.
+
+| Argument | Why it is used |
+| --- | --- |
+| `messages` | Supplies the roles and text for the complete conversation. |
+| `tokenize=True` | Requests token IDs rather than a formatted text string. |
+| `add_generation_prompt=True` | Adds the template's marker for the assistant response to begin. |
+| `return_tensors="pt"` | Requests PyTorch tensors. |
+| `return_dict=True` | Requests a mapping-like collection of model inputs, including `input_ids`, rather than only a tensor. |
+| `enable_thinking=False` | Requests the template's non-thinking mode where supported. |
+
+`return_dict=True` is important because the generation call uses `**inputs` to pass named model arguments. The code also later accesses `inputs["input_ids"]` by name.
+
+The number of tokens in this prompt includes the system instructions, every example input and answer, the current record, and the chat-template markers. `MAX_NEW_TOKENS` limits the answer length; it does not limit this input prompt.
+
+**Move input tensors to the model device.**
+
+`inputs.to(model.device)` moves the returned input tensors to the device reported by the model, normally a CUDA device in the intended runtime. This is the notebook's actual placement step; it does not provide custom input routing for every possible multi-device or offload arrangement.
+
+**Generate the response.**
+
+`torch.inference_mode()` disables autograd-related tracking for inference. It reduces unnecessary training-related overhead; it does not change the model's weights or fine-tune it.
+
+`model.generate(**inputs, ...)` unpacks the input mapping into named arguments. `max_new_tokens=MAX_NEW_TOKENS` caps newly generated tokens at the configured limit, while generation can stop earlier. `do_sample=False` disables random sampling. `pad_token_id=tokenizer.eos_token_id` supplies the tokenizer's end-of-sequence ID as the padding ID for this call.
+
+A response that reaches the limit may end before its JSON object is complete. That often appears later as a parsing error rather than as a dedicated truncation warning.
+
+**Decode only the new tokens.**
+
+For this causal language model generation path, the returned sequence contains the input token sequence followed by the generated tokens.
+
+`inputs["input_ids"].shape[-1]` measures the prompt length in tokens. `generated[0]` selects the first sequence, and `[input_length:]` slices away its prompt portion. This matters because decoding the entire sequence would also include instructions and example JSON objects, which could confuse parsing.
+
+`tokenizer.decode(..., skip_special_tokens=True)` converts the remaining token IDs into text while omitting special token markers recognized by the tokenizer. It is not itself a JSON validation step.
+
+**Return parsed fields.**
+
+The final line, `return parse_response(response_text)`, returns the cleaned dictionary. If generation or parsing raises an exception, this function does not catch it. The caller determines how that failure is handled.
+
+#### 6.6 The first-row test
+
+`input_df.iloc[0]` selects the first input row by position, and `["raw_text"]` selects its source text. The cell calls `extract_address()` once, prints the original, then prints the resulting dictionary as indented JSON.
+
+This test checks that the complete prompt → tokenizer → model → decoder → parser path works for at least one record. It does not validate every row or measure dataset accuracy.
+
+The test is not inside a `try/except` block. If it fails, the cell reports an exception directly. It also does not append to Section 7's results list or save a CSV. The first row is processed again when the main loop starts.
+
+If you change the examples or prompt, rerun this section to rebuild `demonstrations` and retest. Merely uploading a different examples file does not rebuild a previously created demonstration list until this cell runs again.
 
 ### 7. Extract addresses
 
-Processes the selected rows sequentially. For every row it measures elapsed time, attempts extraction, records an exception if one occurs, appends the result, and rewrites the CSV with all results completed so far.
+Section 6 defines what happens for one record. Section 7 applies that function to the selected input rows, adds identifiers and processing metadata, saves results, and prints a summary.
 
-At the end, the cell displays the saved row count, number of processing errors, average recorded seconds per row, and a preview of the first ten results.
+#### Complete Section 7 code
+
+This is the complete notebook cell. It depends on the objects and functions initialized by the earlier sections.
+
+```python
+from pathlib import Path
+from tqdm.auto import tqdm
+
+MAX_ROWS = None
+input_stem = Path(input_filename).stem
+output_path = Path("/content") / f"{input_stem}_cleaned.csv"
+
+subset = input_df if MAX_ROWS is None else input_df.head(MAX_ROWS)
+results = []
+
+for _, row in tqdm(subset.iterrows(), total=len(subset), desc="Cleaning"):
+    start = time.perf_counter()
+    try:
+        extracted = extract_address(row["raw_text"])
+        error = ""
+    except Exception as exc:
+        extracted = {field: "" for field in FIELDS}
+        error = f"{type(exc).__name__}: {str(exc)[:250]}"
+    results.append({
+        "id": row["id"],
+        "raw_text": row["raw_text"],
+        **extracted,
+        "error": error,
+        "seconds": round(time.perf_counter() - start, 2),
+    })
+    pd.DataFrame(results).to_csv(output_path, index=False, encoding="utf-8-sig")
+
+results_df = pd.DataFrame(results)
+print(f"Saved {len(results_df)} rows to {output_path.name}")
+print(f"Rows with processing errors: {results_df['error'].ne('').sum()}")
+print(f"Average processing time: {results_df['seconds'].mean():.2f} sec/row")
+display(results_df.head(10))
+```
+
+#### 7.1 Imports, row limit, and output filename
+
+`Path` provides filesystem path handling. `tqdm.auto` wraps the row iterator with a progress display suited to the environment.
+
+`MAX_ROWS = None` means that the main loop uses the entire input DataFrame. A positive integer selects the first rows in their existing order. This is not random sampling.
+
+`Path(input_filename).stem` removes the final filename extension. If the upload is named `addresses.csv`, `input_stem` becomes `addresses`. The `/` operator on a `Path` joins `/content` with the filename `addresses_cleaned.csv`.
+
+The filename is based on the input upload, not the examples upload. No date/time suffix is added. The cell assumes Colab's `/content` directory is available.
+
+#### 7.2 Selecting rows and initializing results
+
+The conditional expression assigned to `subset` means: use `input_df` if the row limit is `None`; otherwise use `input_df.head(MAX_ROWS)`.
+
+The code then creates `results = []`, an empty Python list. Each iteration adds one dictionary representing one output row. This list stays in runtime memory and grows with the number of processed records.
+
+Rerunning the cell executes `results = []` again. It does not load previously saved output or check which IDs have already been processed.
+
+#### 7.3 Iterating with a progress bar
+
+`subset.iterrows()` produces an iterator of `(index, row)` pairs. Wrapping it in `tqdm(..., total=len(subset), desc="Cleaning")` adds the progress bar and provides the expected total number of iterations.
+
+The loop again uses `_` for the unused DataFrame index. It uses the actual `row["id"]` value for output identification, so a DataFrame's internal index is not substituted for the record ID.
+
+The progress bar covers the main loop only. It does not include installation, model loading, or the first-row test. Its timing can include loop work such as CSV writes, whereas the stored `seconds` column measures a narrower interval.
+
+#### 7.4 Starting the per-row timer
+
+`start = time.perf_counter()` records a high-resolution elapsed-time reference immediately before extraction. It is suited to measuring durations and is not a calendar timestamp.
+
+The later subtraction measures how long the extraction attempt took, including an unsuccessful attempt that raised an exception. The notebook does not record the date or time at which each row ran.
+
+#### 7.5 Success and exception paths
+
+The `try` block calls `extract_address(row["raw_text"])`. On success, `extracted` contains the five-field dictionary and `error` is set to an empty string.
+
+If a standard Python exception derived from `Exception` is raised during that call, the `except` block creates an empty string for every field in `FIELDS`. It then formats an error message containing:
+
+- `type(exc).__name__`: the exception class name, such as `ValueError` or `JSONDecodeError`.
+- `str(exc)[:250]`: at most the first 250 characters of the exception's message.
+
+The 250-character limit applies to the exception message portion, not the complete value including the class name and punctuation. The code does not store a full traceback or the full generated response for every failure.
+
+| Outcome | Extracted fields | `error` | Next action |
+| --- | --- | --- | --- |
+| Extraction and parsing return | Returned five-field dictionary, possibly with some blank fields. | Empty string. | Append result and write CSV. |
+| Extraction or parsing raises a caught exception | All five fields are blank. | Exception type and shortened message. | Append result and write CSV, then attempt the next row. |
+| User interruption or runtime termination | Depends on when execution stopped. | No guaranteed new error row. | Previously written output may remain if the runtime survives. |
+| CSV write fails | Result may already be in the in-memory list. | Write failure is not captured in this row's `error`. | The cell stops with an exception. |
+
+The handler is scoped around `extract_address()`, not the whole iteration. It does not make a failed CUDA environment usable again, retry the row, or guarantee that later rows can succeed after a serious device error. `KeyboardInterrupt` and runtime termination are not ordinary extraction exceptions caught by this handler.
+
+#### 7.6 Constructing one output row
+
+`results.append({...})` adds one dictionary to the list. The dictionary combines values from three sources:
+
+| Source | Fields |
+| --- | --- |
+| Original CSV row | `id`, `raw_text` |
+| Model result after parsing, or blank error result | `address`, `city`, `state`, `zip`, `rationale` |
+| Python processing metadata | `error`, `seconds` |
+
+`**extracted` is dictionary unpacking. It inserts the extracted field names and their values directly into the output dictionary, so they become ordinary CSV columns rather than a nested `extracted` column.
+
+`round(time.perf_counter() - start, 2)` stores elapsed time to two decimal places. This expression is evaluated before the subsequent CSV write. Time spent rewriting the output file is excluded from the recorded duration.
+
+The row keeps its input ID even if extraction fails, allowing you to locate the record in the original dataset. The model is never asked to generate that ID.
+
+#### 7.7 Writing all completed results after each row
+
+`pd.DataFrame(results)` builds a temporary table from the entire accumulated list. `.to_csv(output_path, index=False, encoding="utf-8-sig")` writes that table to the same output path.
+
+| Argument | Effect |
+| --- | --- |
+| `output_path` | Selects the file in `/content`. |
+| `index=False` | Omits pandas' automatic row-index column from the export. The explicit `id` column is still included. |
+| `encoding="utf-8-sig"` | Writes UTF-8 with a byte-order mark, which can help spreadsheet software recognize the text encoding. |
+
+This is a **full rewrite**, not an append-only file operation. After row 1, the file contains 1 result; after row 2, it is rewritten with 2; after row 100, it is rewritten with 100.
+
+Across `n` rows, the notebook serializes a cumulative total of `1 + 2 + ... + n` row records. That is `n(n+1)/2` row records written over the run, even though the final file contains only `n` rows. For 100 inputs, this is 5,050 row records serialized across all writes. This explains why saving frequently has increasing overhead on large datasets.
+
+Frequent saving makes completed work accessible during a surviving session, but it is not automatic resume. It is also not an atomic checkpoint: interruption during a rewrite can leave an incomplete file. A storage error occurs outside the extraction handler and stops the cell.
+
+#### 7.8 Building and displaying the final summary
+
+After the loop, `results_df = pd.DataFrame(results)` creates the final in-memory table.
+
+| Expression | What it reports |
+| --- | --- |
+| `len(results_df)` | Number of output rows accumulated, including rows with caught extraction errors. |
+| `output_path.name` | Filename only, without the `/content` directory. |
+| `results_df['error'].ne('').sum()` | Count of rows whose error value is not an empty string. `.ne('')` produces Boolean values, and summing counts the true values. |
+| `results_df['seconds'].mean()` | Mean recorded extraction-attempt time, including caught failures. |
+| `display(results_df.head(10))` | Notebook preview of up to the first ten results. |
+
+The average is calculated from per-row values already rounded to two decimal places. It excludes model loading, the first-row test, and CSV write time. Fast failed rows can also lower the mean, so read it together with the processing-error count.
+
+The preview does not limit the export to ten rows; it limits only what is displayed in the notebook.
+
+The final summary assumes at least one result row exists. With no selected rows, the empty DataFrame lacks `error` and `seconds`, so the summary can fail. Use `None` or a positive integer for `MAX_ROWS` with the validated nonempty input file.
+
+#### 7.9 One record from upload to export
+
+For a given input row, the complete sequence is:
+
+1. Section 7 reads its `raw_text` and starts the timer.
+2. `extract_address()` combines the rules, all examples, and that text into a fresh conversation.
+3. The tokenizer converts the conversation to model inputs.
+4. The model generates an answer.
+5. The code removes the prompt tokens and decodes the new answer tokens.
+6. `parse_response()` parses and lightly normalizes the answer.
+7. Section 7 combines the fields with the original ID/text, error status, and elapsed seconds.
+8. The result is appended to the list, and the CSV is rewritten with every completed row.
+9. The loop repeats for the next record.
+
+The model produces the address fields and rationale. Python controls record identity, row order, parsing, timing, exception handling, and saving. Separating these responsibilities helps distinguish an incorrect extraction from a processing failure.
 
 ### 8. Download cleaned CSV
 
@@ -383,3 +855,5 @@ Record the GPU, Python environment, PyTorch/CUDA versions, installed package ver
 The notebook pins pandas, uses version ranges for several other packages, leaves some dependencies unpinned, and does not pin a model revision. A fresh run at a later date can therefore load a different software environment or model revision.
 
 Disabling sampling reduces one source of variation, but does not guarantee identical results across GPUs, library versions, kernels, or model revisions. No formal accuracy benchmark or cross-environment reproducibility test is included.
+
+
