@@ -1,0 +1,21 @@
+﻿example_id,raw_text,address,city,state,zip,rationale
+1,"ATTN: Sam Taylor | 82 W Randolph St Ste 710, Chicago IL 60602",82 W Randolph St,Chicago,IL,60602,Removed recipient and suite.
+2,"c/o Jamie Reed, 1470 Oakton St Apt 3C, Des Plaines IL 60018",1470 Oakton St,Des Plaines,IL,60018,Removed care-of and apartment.
+3,PAYROLL DEPT; 412 S Neil St Floor 2; Champaign Illinois 61820,412 S Neil St,Champaign,IL,61820,Removed department and floor.
+4,"Ship To: 231 E Main St, Belleville IL 62220; dock 3; call 618-555-0120",231 E Main St,Belleville,IL,62220,Removed shipping directions and phone.
+5,"OLD: 71 Pine St, Alton IL 62002 | CURRENT: 928 Washington Ave, Alton IL 62002",928 Washington Ave,Alton,IL,62002,Selected current address.
+6,"PO BOX 401; PHYSICAL: 610 E College Ave, Jacksonville IL 62650",610 E College Ave,Jacksonville,IL,62650,Selected physical street address.
+7,<span>53 N Vermilion St&nbsp;Danville IL 61832</span>,53 N Vermilion St,Danville,IL,61832,Removed HTML markup.
+8,INV 0029 *** 845 W Galena Blvd !!! Aurora IL 60506,845 W Galena Blvd,Aurora,IL,60506,Removed invoice reference and punctuation.
+9,"123 N BROADWAY AVENUE / SUITE 5 / PERU, ILLINOIS 61354",123 N Broadway Ave,Peru,IL,61354,"Standardized case, state and street suffix."
+10,REF: XN-887 | 672 S Main Street | Princeton IL 61356 | support@example.com,672 S Main St,Princeton,IL,61356,Removed reference and email.
+11,Facility: North Annex; 909 N Court St Bldg C Room 8; Marion IL 62959,909 N Court St,Marion,IL,62959,Removed facility label and secondary building/room.
+12,"Ship: 378 W 2nd St, Dixon IL 61021, USA; GATE PIN 8831",378 W 2nd St,Dixon,IL,61021,Removed gate code and country.
+13,"=654 E State St, Sycamore IL 60178",654 E State St,Sycamore,IL,60178,Removed spreadsheet wrapper.
+14,"510 S Broadway St, Greenville IL 62246-1843 / delivery by 4PM",510 S Broadway St,Greenville,IL,62246,Reduced ZIP+4 and removed instructions.
+15,ATTN: K Lee / 240 E Main St / Galesburg IL 61401 / order 11928,240 E Main St,Galesburg,IL,61401,Removed recipient and order number.
+16,"Customer record: 115 E Main St, Carbondale IL 62901; second floor",115 E Main St,Carbondale,IL,62901,Removed record label and floor.
+17,"PO Box 88, Quincy IL 62301 / invoices only",,Quincy,IL,62301,No physical street address.
+18,"Recipient unknown, Bloomington IL 61704, see address on file",,Bloomington,IL,61704,Street address not supplied.
+19,NEW SITE TBD | Freeport Illinois 61032 | phone 815-555-0100,,Freeport,IL,61032,Street location not yet specified.
+20,"411 E Walnut St OR 790 N Walnut St, Harrisburg IL 62946",,Harrisburg,IL,62946,Two conflicting street addresses without a selection cue.
