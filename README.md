@@ -383,9 +383,3 @@ Record the GPU, Python environment, PyTorch/CUDA versions, installed package ver
 The notebook pins pandas, uses version ranges for several other packages, leaves some dependencies unpinned, and does not pin a model revision. A fresh run at a later date can therefore load a different software environment or model revision.
 
 Disabling sampling reduces one source of variation, but does not guarantee identical results across GPUs, library versions, kernels, or model revisions. No formal accuracy benchmark or cross-environment reproducibility test is included.
-
-## License
-
-A license for the notebook's own code is not specified here. Check for a repository `LICENSE` file to determine the permissions granted by the repository owner.
-
-The model and dependencies have their own terms. Review the [Qwen model repository](https://huggingface.co/Qwen/Qwen3.5-9B) and the licenses of the libraries you use before redistribution or deployment. A license added to this repository does not replace those third-party terms.
